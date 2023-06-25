@@ -126,6 +126,8 @@ found:
   memset(&p->context, 0, sizeof(p->context));
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
+  // p->tracemask 默认为0
+  p->tracemask = 0;
 
   return p;
 }
@@ -274,7 +276,7 @@ fork(void)
     return -1;
   }
   np->sz = p->sz;
-
+  np->tracemask = p->tracemask;   // 子进程继承父进程的 tracemask
   np->parent = p;
 
   // copy saved user registers.

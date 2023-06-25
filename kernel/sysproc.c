@@ -95,3 +95,18 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+// 
+uint64
+sys_trace(void)
+{
+  int mask;
+
+  if(argint(0, &mask) < 0)
+    return -1;
+  // myproc()->tracemask = mask;
+  // 为什么这里不能用 = ，因为用户可能遇到 trace 后跟 trace 的场景
+  // 因此这里使用位或更合理
+  myproc()->tracemask |= mask;
+  return 0;
+}
