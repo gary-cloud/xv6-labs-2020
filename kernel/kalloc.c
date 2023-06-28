@@ -80,3 +80,19 @@ kalloc(void)
     memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;
 }
+
+// Calculate amount of free memory.
+uint64
+calfreemem(void)
+{
+  struct run *r;
+  uint64 free = 0;
+  acquire(&kmem.lock);  // 获得锁
+  r = kmem.freelist;
+  while (r) {           // 遍历每一页的单链表
+    free += PGSIZE;     // 一页4096字节
+    r = r->next;    
+  }
+  release(&kmem.lock);  // 释放锁
+  return free;
+}

@@ -695,3 +695,18 @@ procdump(void)
     printf("\n");
   }
 }
+
+// Calculate number of used process.
+uint64
+calusedproc(void) {
+  struct proc *p;
+  uint64 count = 0;
+  for(p = proc; p < &proc[NPROC]; p++) {
+    // 此处不一定需要加锁, 因为该函数是只读不写
+    // 但proc.c里其他类似的遍历时都加了锁, 那我们也加上
+    acquire(&p->lock);
+    if(p->state != UNUSED) count++;
+    release(&p->lock);
+  }
+  return count;
+}

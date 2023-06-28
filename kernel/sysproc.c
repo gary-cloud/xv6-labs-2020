@@ -6,6 +6,7 @@
 #include "memlayout.h"
 #include "spinlock.h"
 #include "proc.h"
+#include "sysinfo.h"
 
 uint64
 sys_exit(void)
@@ -96,7 +97,7 @@ sys_uptime(void)
   return xticks;
 }
 
-// 
+// trace sys call
 uint64
 sys_trace(void)
 {
@@ -108,5 +109,29 @@ sys_trace(void)
   // 为什么这里不能用 = ，因为用户可能遇到 trace 后跟 trace 的场景
   // 因此这里使用位或更合理
   myproc()->tracemask |= mask;
+  return 0;
+}
+
+uint64 calfreemem(void);
+uint64 calusedproc(void);
+
+uint64
+sys_sysinfo(void)
+{
+  struct sysinfo info;
+  uint64 addr; // user pointer to struct sysinfo
+
+  // 计算sysinfo结构体信息
+  info.freemem = calfreemem();
+  info.nproc = calusedproc();
+
+  // 获得用户态待求的sysinfo结构体的地址
+  if(argaddr(0, &addr) < 0)
+    return -1;
+
+  // 将计算得到的sysinfo结构体拷贝回用户态
+  if(copyout(myproc()->pagetable, addr, (char *)&info, sizeof(info)) < 0)
+    return -1;
+
   return 0;
 }
