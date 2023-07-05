@@ -440,3 +440,35 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     return -1;
   }
 }
+
+void
+vmprint_recur(pagetable_t pagetable, int level)
+{
+  // there are 2^9 = 512 PTEs in a page table.
+  for(int i = 0; i < 512; i++){
+    pte_t pte = pagetable[i];
+    if ((pte & PTE_V) == 0) continue;   // pte & PTE_V == 0说明该PTE无效
+
+    // this PTE points to a lower-level page table.
+    uint64 child = PTE2PA(pte);
+    switch (level)
+    {
+    case 2:
+      printf("..%d: pte %p pa %p\n", i, pte, child); break;
+    case 1:
+      printf(".. ..%d: pte %p pa %p\n", i, pte, child); break;
+    case 0:
+      printf(".. .. ..%d: pte %p pa %p\n", i, pte, child); break;
+    }
+
+    if((pte & (PTE_R|PTE_W|PTE_X))) continue;   // 中间PTE只有PTE_V有效，该条件说明该PTE属于最后一级页表
+    vmprint_recur((pagetable_t)child, level - 1);
+  }
+}
+
+void
+vmprint(pagetable_t pagetable)
+{
+  printf("page table %p\n", pagetable);
+  vmprint_recur(pagetable, 2);
+}
