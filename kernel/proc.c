@@ -34,10 +34,14 @@ procinit(void)
       // Allocate a page for the process's kernel stack.
       // Map it high in memory, followed by an invalid
       // guard page.
+
+      // 在这里为所有的进程进行了 初始化锁 和 分配kstack物理块 的工作
+      // 进程的在 proc 数组中的位置决定了kstack的位置
       char *pa = kalloc();
       if(pa == 0)
         panic("kalloc");
       uint64 va = KSTACK((int) (p - proc));
+      // 这里映射到全局的内核页表中
       kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
       p->kstack = va;
   }
@@ -122,23 +126,25 @@ found:
   }
 
   // An empty kernel page table.
-  p->kpagetable = pkvminit();
+  p->kpagetable = my_kvminit();
   if(p->kpagetable == 0){
     freeproc(p);
     release(&p->lock);
     return 0;
   }
 
-  // Allocate a page for the process's kernel stack.
-  // And map the kernel stack in p->kpagetable.
-  // Map it high in memory, followed by an invalid
-  // guard page.
-  char *pa = kalloc();
-  if(pa == 0)
-    panic("kalloc");
+  // remap the kernel stack page per process
+  // physical address is already allocated in procinit()
+  // 每个kernel stack的虚拟地址va是已经提前决定好的 直接算出它对应的pa
+  // 然后把这个映射加入到新的专属内核页里
+  // 在 procinit 函数中所有进程的 kstack 已经分配完成
+  // 因此这里无需再次 kalloc
   uint64 va = KSTACK((int) (p - proc));   // 这里的proc是进程数组
-  pkvmmap(p->kpagetable, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+  uint64 pa = kvmpa(va);                  // 1. 这里从全局的内核页表拿到 kstack 的映射关系
+  memset((void *)pa, 0, PGSIZE);          // 2. 清空 kstack
+  my_kvmmap(p->kpagetable, va, pa, PGSIZE, PTE_R | PTE_W);    // 3. 将映射关系存入进程独立的内核页表
   p->kstack = va;
+  
 
   // Set up new context to start executing at forkret,
   // which returns to user space.
@@ -172,7 +178,7 @@ freeproc(struct proc *p)
 
   if(p->kstack)
     // 释放kstack
-    uvmunmap(p->kpagetable, p->kstack, 1, 1);
+    uvmunmap(p->kpagetable, p->kstack, PGSIZE/PGSIZE, 0);
   p->kstack = 0;
 
   if(p->kpagetable)
@@ -233,14 +239,14 @@ void
 proc_freekernelpagetable(pagetable_t kpagetable)
 {
   // 按分配顺序的逆序来销毁内核页表映射
-  uvmunmap(kpagetable, TRAMPOLINE, 1, 0);
+  uvmunmap(kpagetable, TRAMPOLINE, PGSIZE/PGSIZE, 0);
   uvmunmap(kpagetable, (uint64)etext, (PHYSTOP-(uint64)etext)/PGSIZE, 0);
   uvmunmap(kpagetable, KERNBASE, ((uint64)etext-KERNBASE)/PGSIZE,0);
   uvmunmap(kpagetable, PLIC, 0x400000/PGSIZE,0);
   uvmunmap(kpagetable, CLINT, 0x10000/PGSIZE,0);
-  uvmunmap(kpagetable, VIRTIO0, 1,0);
-  uvmunmap(kpagetable, UART0, 1,0);
-  pfreewalk(kpagetable);
+  uvmunmap(kpagetable, VIRTIO0, PGSIZE/PGSIZE,0);
+  uvmunmap(kpagetable, UART0, PGSIZE/PGSIZE,0);
+  my_freewalk(kpagetable);
 }
 
 // a user program that calls exec("/init")

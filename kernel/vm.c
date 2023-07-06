@@ -53,33 +53,33 @@ kvminit()
  * create a direct-map kernel page table for process.
  */
 pagetable_t
-pkvminit()
+my_kvminit()
 {
   pagetable_t kpagetable = (pagetable_t) kalloc();
   if (kpagetable == 0) return kpagetable;    // if kalloc fails, return 0
   memset(kpagetable, 0, PGSIZE);
 
   // uart registers
-  pkvmmap(kpagetable, UART0, UART0, PGSIZE, PTE_R | PTE_W);
+  my_kvmmap(kpagetable, UART0, UART0, PGSIZE, PTE_R | PTE_W);
 
   // virtio mmio disk interface
-  pkvmmap(kpagetable, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
+  my_kvmmap(kpagetable, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
 
   // CLINT
-  pkvmmap(kpagetable, CLINT, CLINT, 0x10000, PTE_R | PTE_W);
+  my_kvmmap(kpagetable, CLINT, CLINT, 0x10000, PTE_R | PTE_W);
 
   // PLIC
-  pkvmmap(kpagetable, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
+  my_kvmmap(kpagetable, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
 
   // map kernel text executable and read-only.
-  pkvmmap(kpagetable, KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R | PTE_X);
+  my_kvmmap(kpagetable, KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R | PTE_X);
 
   // map kernel data and the physical RAM we'll make use of.
-  pkvmmap(kpagetable, (uint64)etext, (uint64)etext, PHYSTOP-(uint64)etext, PTE_R | PTE_W);
+  my_kvmmap(kpagetable, (uint64)etext, (uint64)etext, PHYSTOP-(uint64)etext, PTE_R | PTE_W);
 
   // map the trampoline for trap entry/exit to
   // the highest virtual address in the kernel.
-  pkvmmap(kpagetable, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+  my_kvmmap(kpagetable, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
 
   return kpagetable;
 }
@@ -160,10 +160,10 @@ kvmmap(uint64 va, uint64 pa, uint64 sz, int perm)
 
 // add a mapping to the kernel page table of process.
 void
-pkvmmap(pagetable_t kpagetable, uint64 va, uint64 pa, uint64 sz, int perm)
+my_kvmmap(pagetable_t kpagetable, uint64 va, uint64 pa, uint64 sz, int perm)
 {
   if(mappages(kpagetable, va, sz, pa, perm) != 0)
-    panic("pkvmmap");
+    panic("my_kvmmap");
 }
 
 // translate a kernel virtual address to
@@ -177,7 +177,7 @@ kvmpa(uint64 va)
   pte_t *pte;
   uint64 pa;
   
-  pte = walk(myproc()->kpagetable, va, 0);
+  pte = walk(kernel_pagetable, va, 0);
   if(pte == 0)
     panic("kvmpa");
   if((*pte & PTE_V) == 0)
@@ -337,7 +337,7 @@ freewalk(pagetable_t pagetable)
 // Recursively free page-table pages similar to freewalk.
 // Not need to already free leaf node.
 void
-pfreewalk(pagetable_t pagetable)
+my_freewalk(pagetable_t pagetable)
 {
   // there are 2^9 = 512 PTEs in a page table.
   for(int i = 0; i < 512; i++){
@@ -345,7 +345,7 @@ pfreewalk(pagetable_t pagetable)
     if((pte & PTE_V) && (pte & (PTE_R|PTE_W|PTE_X)) == 0){  // 非叶子
       // this PTE points to a lower-level page table.
       uint64 child = PTE2PA(pte);
-      pfreewalk((pagetable_t)child);
+      my_freewalk((pagetable_t)child);
     }
     pagetable[i] = 0;
   }
