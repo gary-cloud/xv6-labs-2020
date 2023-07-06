@@ -121,6 +121,25 @@ found:
     return 0;
   }
 
+  // An empty kernel page table.
+  p->kpagetable = pkvminit();
+  if(p->kpagetable == 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+
+  // Allocate a page for the process's kernel stack.
+  // And map the kernel stack in p->kpagetable.
+  // Map it high in memory, followed by an invalid
+  // guard page.
+  char *pa = kalloc();
+  if(pa == 0)
+    panic("kalloc");
+  uint64 va = KSTACK((int) (p - proc));   // 这里的proc是进程数组
+  pkvmmap(p->kpagetable, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+  p->kstack = va;
+
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
@@ -150,6 +169,16 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+
+  if(p->kstack)
+    // 释放kstack
+    uvmunmap(p->kpagetable, p->kstack, 1, 1);
+  p->kstack = 0;
+
+  if(p->kpagetable)
+    proc_freekernelpagetable(p->kpagetable);
+  p->kpagetable = 0;
+
 }
 
 // Create a user page table for a given process,
@@ -193,6 +222,25 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
   uvmfree(pagetable, sz);
+}
+
+// Free a process's kernel page table, but don not free the
+// physical memory it refers to
+// except kstack.
+extern char etext[];
+
+void
+proc_freekernelpagetable(pagetable_t kpagetable)
+{
+  // 按分配顺序的逆序来销毁内核页表映射
+  uvmunmap(kpagetable, TRAMPOLINE, 1, 0);
+  uvmunmap(kpagetable, (uint64)etext, (PHYSTOP-(uint64)etext)/PGSIZE, 0);
+  uvmunmap(kpagetable, KERNBASE, ((uint64)etext-KERNBASE)/PGSIZE,0);
+  uvmunmap(kpagetable, PLIC, 0x400000/PGSIZE,0);
+  uvmunmap(kpagetable, CLINT, 0x10000/PGSIZE,0);
+  uvmunmap(kpagetable, VIRTIO0, 1,0);
+  uvmunmap(kpagetable, UART0, 1,0);
+  pfreewalk(kpagetable);
 }
 
 // a user program that calls exec("/init")
@@ -473,7 +521,16 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+
+        // switch process's kernel page table
+        w_satp(MAKE_SATP(p->kpagetable));
+        // flush the TLB.
+        sfence_vma();
+
         swtch(&c->context, &p->context);
+
+        // switch global kernel page table
+        kvminithart();
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.
