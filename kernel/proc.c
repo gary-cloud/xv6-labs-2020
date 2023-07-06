@@ -275,6 +275,9 @@ userinit(void)
   uvminit(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
 
+  // add user-PGBTL into per-proc-kPGBTL
+  pagecopy(p->pagetable, p->kpagetable, 0, p->sz);
+
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
   p->trapframe->sp = PGSIZE;  // user stack pointer
@@ -297,12 +300,28 @@ growproc(int n)
 
   sz = p->sz;
   if(n > 0){
-    if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
+    // 内核页的虚拟地址不能溢出PLIC
+    if (sz + n > PLIC) {
+      return -1;
+    }
+    if ((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
+      return -1;
+    }
+    // 增量同步到内核页表中[old size, new size]
+    if (pagecopy(p->pagetable, p->kpagetable, p->sz, sz) < 0) {
       return -1;
     }
   } else if(n < 0){
     sz = uvmdealloc(p->pagetable, sz, sz + n);
+    if (PGROUNDUP(sz) < PGROUNDUP(p->sz)) {
+      // 缩量同步到内核页表中[new size, old size]
+      uvmunmap(p->kpagetable, PGROUNDUP(sz), (PGROUNDUP(p->sz) - PGROUNDUP(sz)) / PGSIZE, 0);
+    }
   }
+
+  w_satp(MAKE_SATP(p->kpagetable));
+  sfence_vma();
+
   p->sz = sz;
   return 0;
 }
@@ -328,6 +347,13 @@ fork(void)
     return -1;
   }
   np->sz = p->sz;
+
+  // 将用户页表的内容拷到内核页表
+  if (pagecopy(np->pagetable, np->kpagetable, 0, np->sz) < 0) {
+    freeproc(np);
+    release(&np->lock);
+    return -1;
+  }
 
   np->parent = p;
 
