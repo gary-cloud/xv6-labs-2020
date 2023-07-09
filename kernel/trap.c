@@ -77,8 +77,23 @@ usertrap(void)
     exit(-1);
 
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2)
+  if(which_dev == 2){
+    if(p->targ_ticks){
+      // 仅当前一个的alarm处理完成，
+      // 并在sys_sigreturn中，令p->now_ticks=0后，
+      // 才能有其他的alarm进入
+      if(p->now_ticks == p->targ_ticks){
+        // now_ticks clear immediately to avoiding reentrant alarm calls
+        // store trapframe before alarm
+        // so that we can resume status in sys_sigreturn
+        // memmove(p->preframe, p->trapframe, sizeof(struct trapframe));
+        *p->preframe = *p->trapframe;
+        p->trapframe->epc = p->alarm_handler;
+      }
+      p->now_ticks++;
+    }
     yield();
+  }
 
   usertrapret();
 }
