@@ -464,6 +464,11 @@ cow_alloc(pagetable_t pagetable, uint64 va)
   if (va >= MAXVA) {
     printf("cow_alloc: exceeds MAXVA\n");
     return 0;   // 这里返回0的处理与 walkaddr 一致
+    // 这里不能return -1，因为这会导致进程退出
+    // 直接return 0
+    // 1. 若是page fault调用该函数，则冷处理，让出现page fault的代码无法实际写入
+    // 2. 若是copyout调用该函数，令copyout返回-1，
+    //    让其他代码判断，当遇到copyout执行失败的情况，该如何进行后续操作
   }
 
   pte_t *pte = walk(pagetable, va, 0);
