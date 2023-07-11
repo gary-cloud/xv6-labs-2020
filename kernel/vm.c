@@ -5,6 +5,7 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
 
 /*
  * the kernel's page table.
@@ -14,6 +15,11 @@ pagetable_t kernel_pagetable;
 extern char etext[];  // kernel.ld sets this to end of kernel code.
 
 extern char trampoline[]; // trampoline.S
+
+extern struct{
+  struct spinlock lock;
+  int count;
+} phy_ref_cnt[];
 
 /*
  * create a direct-map page table for the kernel.
@@ -311,26 +317,34 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
       panic("uvmcopy: pte should exist");
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
-    pa = PTE2PA(*pte);
+
+    pa = PTE2PA(*pte);  // 页首
+
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
+    flags &= ~PTE_W;
+    flags |= PTE_COW;
+
+    if(mappages(new, i, PGSIZE, pa, flags) != 0){
       goto err;
     }
+
+    uint64 idx = PA2IDX(pa);
+    acquire(&phy_ref_cnt[idx].lock);
+    phy_ref_cnt[idx].count++;
+    release(&phy_ref_cnt[idx].lock);
+    
+    *pte &= ~PTE_W;
+    *pte |= PTE_COW;
   }
   return 0;
 
- err:
+err:
   uvmunmap(new, 0, i / PGSIZE, 1);
   return -1;
 }
@@ -358,6 +372,9 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
+    if ((cow_alloc(pagetable, va0)) < 0) {
+      exit(-1);
+    }
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0)
       return -1;
@@ -439,4 +456,46 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+int
+cow_alloc(pagetable_t pagetable, uint64 va)
+{
+  if (va >= MAXVA) {
+    printf("cow_alloc: exceeds MAXVA\n");
+    return 0;   // 这里返回0的处理与 walkaddr 一致
+  }
+
+  pte_t *pte = walk(pagetable, va, 0);
+  if(pte == 0) {
+    return 0;
+  }
+  if((*pte & PTE_V) == 0) {
+    return 0;
+  }
+  if((*pte & PTE_U) == 0) {
+    return 0;
+  }
+  if((*pte & PTE_COW) == 0) {     // 判断是否为cow，不是则跳出
+    if(*pte & PTE_W) return 0;
+    else panic("cow_alloc: no cow and can't write");
+  }
+
+  uint64 pa_old = PTE2PA(*pte);   // 页首
+  uint64 flags = PTE_FLAGS(*pte);
+  
+  uint64 pa_new = (uint64)kalloc();
+  if (pa_new == 0) {
+    return -1;
+  }
+  memmove((void *) pa_new, (const void *) pa_old, PGSIZE);
+
+  flags |= PTE_W;
+  flags &= ~PTE_COW;
+
+  *pte = PA2PTE(pa_new) | flags;
+  
+  kfree((void *) pa_old);
+
+  return 0;
 }
