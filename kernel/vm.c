@@ -381,6 +381,8 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
+    // 为何在内核中，这里可以直接引用物理地址，解引用得到值？
+    // 难道不会因为需要MMU再次进行映射而报错吗？
     memmove((void *)(pa0 + (dstva - va0)), src, n);
 
     len -= n;
@@ -406,6 +408,8 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
     n = PGSIZE - (srcva - va0);
     if(n > len)
       n = len;
+    // 为何在内核中，这里可以直接引用物理地址，解引用得到值？
+    // 难道不会因为需要MMU再次进行映射而报错吗？
     memmove(dst, (void *)(pa0 + (srcva - va0)), n);
 
     len -= n;
@@ -435,6 +439,8 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
       n = max;
 
     char *p = (char *) (pa0 + (srcva - va0));
+    // 为何在内核中，这里可以直接引用物理地址，解引用得到值？
+    // 难道不会因为需要MMU再次进行映射而报错吗？
     while(n > 0){
       if(*p == '\0'){
         *dst = '\0';
