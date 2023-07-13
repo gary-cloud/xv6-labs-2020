@@ -188,6 +188,9 @@ uartintr(void)
   }
 
   // send buffered characters.
+  // uart传输完成也会触发uart的中断，
+  // xv6试图继续传输，但是我认为这里似乎没有必要
+  // 将以下三行代码注释掉好像并未影响xv6的功能
   acquire(&uart_tx_lock);
   uartstart();
   release(&uart_tx_lock);
