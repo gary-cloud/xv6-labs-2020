@@ -22,6 +22,10 @@ void
 acquire(struct spinlock *lk)
 {
   push_off(); // disable interrupts to avoid deadlock.
+  // 获取锁过程的中断的开、关，必须和锁的释放、获取操作配对
+  // 避免在持有锁时，因处理中断造成死锁
+  // 关中断必须在锁获取之前，同时开中断必须在锁获取之后
+  // 避免出现在持有锁时还能处理中断的真空期
   if(holding(lk))
     panic("acquire");
 

@@ -223,6 +223,7 @@ userinit(void)
 
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
+  // 这意味着该进程第一次被调度时，返回用户态的代码位置是 initcode 的起点
   p->trapframe->sp = PGSIZE;  // user stack pointer
 
   safestrcpy(p->name, "initcode", sizeof(p->name));
@@ -334,6 +335,7 @@ exit(int status)
 {
   struct proc *p = myproc();
 
+  // 第一个进程initproc永远不会退出
   if(p == initproc)
     panic("init exiting");
 
@@ -504,6 +506,10 @@ sched(void)
   int intena;
   struct proc *p = myproc();
 
+  // 进程在调用switch函数的过程中，
+  // 必须要持有p->lock（注，也就是进程对应的proc结构体中的锁），
+  // 但是同时又不能持有除了它以外的其他锁
+  // 获取p->lock时，应当完成了关中断的操作
   if(!holding(&p->lock))
     panic("sched p->lock");
   if(mycpu()->noff != 1)
@@ -564,8 +570,15 @@ sleep(void *chan, struct spinlock *lk)
   // (wakeup locks p->lock),
   // so it's okay to release lk.
   if(lk != &p->lock){  //DOC: sleeplock0
+    // 这里关键是：
+    // 1. 外部调用sleep时需要持有condition lock并传入，这样sleep函数才能知道相应的锁
+    // 2. sleep函数只有在获取到进程锁p->lock之后，才能释放condition lock
     acquire(&p->lock);  //DOC: sleeplock1
     release(lk);
+    // 为什么这样设计：
+    // 这里两把锁（进程锁和条件锁）接力，使得临界区有交集，
+    // 这令 释放锁 和 设置进程为SLEEPING状态 这两个行为合并为一个原子操作，
+    // 保证了整个过程中不会因为锁的释放，以至于导致lost wakeup（进程未进入sleeping便收到wakeup）
   }
 
   // Go to sleep.
@@ -589,6 +602,7 @@ sleep(void *chan, struct spinlock *lk)
 void
 wakeup(void *chan)
 {
+  // 这里关键是：wakeup需要同时持有两个锁才能查看进程，条件锁需要在wakeup的外部获取
   struct proc *p;
 
   for(p = proc; p < &proc[NPROC]; p++) {
