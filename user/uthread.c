@@ -10,11 +10,30 @@
 #define STACK_SIZE  8192
 #define MAX_THREAD  4
 
+// Saved registers for kernel context switches.
+struct context {
+  uint64 ra;
+  uint64 sp;
+
+  // callee-saved
+  uint64 s0;
+  uint64 s1;
+  uint64 s2;
+  uint64 s3;
+  uint64 s4;
+  uint64 s5;
+  uint64 s6;
+  uint64 s7;
+  uint64 s8;
+  uint64 s9;
+  uint64 s10;
+  uint64 s11;
+};
 
 struct thread {
-  char       stack[STACK_SIZE]; /* the thread's stack */
-  int        state;             /* FREE, RUNNING, RUNNABLE */
-
+  char            stack[STACK_SIZE]; /* the thread's stack */
+  int             state;             /* FREE, RUNNING, RUNNABLE */
+  struct context  context;
 };
 struct thread all_thread[MAX_THREAD];
 struct thread *current_thread;
@@ -63,6 +82,8 @@ thread_schedule(void)
      * Invoke thread_switch to switch from t to next_thread:
      * thread_switch(??, ??);
      */
+    // 注意：这里的t才是将要暂停的线程，而非current_thread
+    thread_switch((uint64) &t->context, (uint64) &next_thread->context);
   } else
     next_thread = 0;
 }
@@ -77,6 +98,14 @@ thread_create(void (*func)())
   }
   t->state = RUNNABLE;
   // YOUR CODE HERE
+  // 初始化
+  memset(&t->context, 0, sizeof(struct context));
+  memset(&t->stack, 0, STACK_SIZE);
+  // 第一次调度给定的线程时，线程在自己的栈上执行传递给thread_create()的函数。
+  t->context.ra = (uint64) func;
+  // 此处加上STACK_SIZE是因为xv6的栈是向下增长的
+  t->context.sp = (uint64) t->stack + STACK_SIZE;
+  t->state = RUNNABLE;
 }
 
 void 
@@ -158,6 +187,7 @@ main(int argc, char *argv[])
   thread_create(thread_a);
   thread_create(thread_b);
   thread_create(thread_c);
-  thread_schedule();
+  printf("____------%d\n", all_thread[0].state);
+  thread_schedule();        // 此处用户级线程开始调度、执行
   exit(0);
 }

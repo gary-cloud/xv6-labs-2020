@@ -35,7 +35,7 @@ OBJS = \
   $K/sysfile.o \
   $K/kernelvec.o \
   $K/plic.o \
-  $K/virtio_disk.o
+  $K/virtio_disk.o\
 
 ifeq ($(LAB),pgtbl)
 OBJS += \
@@ -175,6 +175,8 @@ UPROGS=\
 	$U/_grind\
 	$U/_wc\
 	$U/_zombie\
+	$U/_uthread\
+	$U/_uthread_switch\
 
 
 
