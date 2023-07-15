@@ -110,6 +110,9 @@ write_head(void)
     hb->block[i] = log.lh.block[i];
   }
   bwrite(buf);
+  // 这里的bwrite就是实际的commit point
+  // 在commit point之前，transaction并没有发生，
+  // 在commit point之后，只要恢复程序正确运行，transaction必然可以完成。
   brelse(buf);
 }
 
@@ -181,7 +184,7 @@ write_log(void)
   int tail;
 
   for (tail = 0; tail < log.lh.n; tail++) {
-    struct buf *to = bread(log.dev, log.start+tail+1); // log block
+    struct buf *to = bread(log.dev, log.start+tail+1); // cache log block
     struct buf *from = bread(log.dev, log.lh.block[tail]); // cache block
     memmove(to->data, from->data, BSIZE);
     bwrite(to);  // write the log
