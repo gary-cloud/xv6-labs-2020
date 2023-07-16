@@ -5,7 +5,11 @@ struct buf {
   uint blockno;
   struct sleeplock lock;
   uint refcnt;
+#ifdef LAB_LOCK
+  uint ticks;
+#else
   struct buf *prev; // LRU cache list
+#endif
   struct buf *next;
   uchar data[BSIZE];
 };

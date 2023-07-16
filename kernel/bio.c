@@ -23,6 +23,53 @@
 #include "fs.h"
 #include "buf.h"
 
+#ifdef LAB_LOCK
+extern uint ticks;    // 当前时间戳
+// ticks in trap.c
+
+#define HASH(x) (x % BUCKETNUM)
+
+// 测试时使用大锁，保证除并发部分以外的其他功能正常
+struct spinlock big_lock;
+
+struct {
+  struct spinlock lock;
+  struct buf buf[NBUF];
+} bcache;
+
+struct bucket {
+  struct spinlock lock;
+  struct buf *head;
+} buckets[BUCKETNUM];   // 哈希桶：拉链法 或 固定槽位 以解决冲突的哈希表
+
+// 向哈希桶中插入一个元素（头插法）
+void buckets_insert(struct buf *item) {
+  int hash = HASH(item->blockno);
+
+  item->next = buckets[hash].head;
+  buckets[hash].head = item;
+}
+
+// 移除哈希桶一个元素
+void buckets_remove(struct buf *item) {
+  struct buf *b;
+  int hash = HASH(item->blockno);
+
+  if (buckets[hash].head == 0) return;
+
+  if (buckets[hash].head == item) {
+    buckets[hash].head = item->next;
+    return;
+  }
+
+  for(b = buckets[hash].head; b->next != 0; b = b->next){
+    if (b->next == item) {
+      b->next = item->next;
+      return;
+    }
+  }
+}
+#else
 struct {
   struct spinlock lock;
   struct buf buf[NBUF];
@@ -32,7 +79,28 @@ struct {
   // head.next is most recent, head.prev is least.
   struct buf head;
 } bcache;
+#endif
 
+#ifdef LAB_LOCK
+void
+binit(void)
+{
+  struct buf *b;
+
+  initlock(&bcache.lock, "bcache");
+  for (int i = 0; i < BUCKETNUM; i++) {
+    initlock(&buckets[i].lock, "bucket");
+    buckets[i].head = 0;
+  }
+  
+  for(b = bcache.buf; b < bcache.buf+NBUF; b++){
+    initsleeplock(&b->lock, "buffer");
+    b->next = 0;
+  }
+
+  initlock(&big_lock, "big_lock");
+}
+#else
 void
 binit(void)
 {
@@ -51,7 +119,80 @@ binit(void)
     bcache.head.next = b;
   }
 }
+#endif
 
+#ifdef LAB_LOCK
+static struct buf*
+bget(uint dev, uint blockno)
+{
+  struct buf *b;
+  int hash_in;
+  int hash_out;
+  hash_in = HASH(blockno);
+
+  acquire(&buckets[hash_in].lock);
+  // acquire(&big_lock);
+
+  // Is the block already cached?
+  for(b = buckets[hash_in].head; b != 0; b = b->next){
+    if(b->dev == dev && b->blockno == blockno){
+      b->refcnt++;
+      release(&buckets[hash_in].lock);
+      // release(&big_lock);
+      acquiresleep(&b->lock);
+      return b;
+    }
+  }
+  release(&buckets[hash_in].lock);
+
+  // Not cached.
+  // To find the least ticks of bcache in the loop.
+  acquire(&bcache.lock);
+  struct buf *recycle = 0;
+  for(b = bcache.buf; b < bcache.buf+NBUF; b++) {
+    if (b->refcnt == 0) {
+      if (recycle == 0) {
+	    	recycle = b;
+	    	continue;
+	    }
+      if (b->ticks < recycle->ticks) {
+        recycle = b;
+      }
+    }
+  }
+
+  if (recycle == 0) panic("bget: no buffers");
+
+  // Recycle the least recently used (LRU) unused buffer.
+
+  // 1. 在buckets中删除将被移除的buf的索引
+  hash_out = HASH(recycle->blockno);
+  // if (hash_out != hash_in)
+  acquire(&buckets[hash_out].lock);
+  buckets_remove(recycle);
+  // if (hash_out != hash_in)
+  release(&buckets[hash_out].lock);
+
+  // 2. 初始化重用的buf
+  recycle->dev = dev;
+  recycle->blockno = blockno;
+  recycle->valid = 0;
+  recycle->refcnt = 1;
+  recycle->ticks = ticks;
+  release(&bcache.lock);
+
+  // 3. 在buckets中增加将被移入的buf的索引
+  acquire(&buckets[hash_in].lock);
+  buckets_insert(recycle);
+  release(&buckets[hash_in].lock);
+
+  // release(&big_lock);
+
+  acquiresleep(&recycle->lock);
+
+  return recycle;
+}
+#else
 // Look through buffer cache for block on device dev.
 // If not found, allocate a buffer.
 // In either case, return locked buffer.
@@ -87,6 +228,7 @@ bget(uint dev, uint blockno)
   }
   panic("bget: no buffers");
 }
+#endif
 
 // Return a locked buf with the contents of the indicated block.
 struct buf*
@@ -111,6 +253,27 @@ bwrite(struct buf *b)
   virtio_disk_rw(b, 1);
 }
 
+#ifdef LAB_LOCK
+void
+brelse(struct buf *b)
+{
+  if(!holdingsleep(&b->lock))
+    panic("brelse");
+
+  releasesleep(&b->lock);
+  
+  int hash = HASH(b->blockno);
+  acquire(&buckets[hash].lock);
+  // acquire(&big_lock);
+  b->refcnt--;
+  if (b->refcnt == 0) {
+    // no one is waiting for it.
+	  b->ticks = ticks;
+  }
+  release(&buckets[hash].lock);
+  // release(&big_lock);
+}
+#else
 // Release a locked buffer.
 // Move to the head of the most-recently-used list.
 void
@@ -135,19 +298,44 @@ brelse(struct buf *b)
   
   release(&bcache.lock);
 }
+#endif
 
+#ifdef LAB_LOCK
+void
+bpin(struct buf *b) {
+  int hash = HASH(b->blockno);
+  acquire(&buckets[hash].lock);
+  // acquire(&big_lock);
+  b->refcnt++;
+  release(&buckets[hash].lock);
+  // release(&big_lock);
+}
+#else
 void
 bpin(struct buf *b) {
   acquire(&bcache.lock);
   b->refcnt++;
   release(&bcache.lock);
 }
+#endif
 
+#ifdef LAB_LOCK
+void
+bunpin(struct buf *b) {
+  int hash = HASH(b->blockno);
+  acquire(&buckets[hash].lock);
+  // acquire(&big_lock);
+  b->refcnt--;
+  release(&buckets[hash].lock);
+  // release(&big_lock);
+}
+#else
 void
 bunpin(struct buf *b) {
   acquire(&bcache.lock);
   b->refcnt--;
   release(&bcache.lock);
 }
+#endif
 
 
