@@ -167,6 +167,8 @@ bget(uint dev, uint blockno)
 
   // 1. 在buckets中删除将被移除的buf的索引
   hash_out = HASH(recycle->blockno);
+  // 新的块可能哈希到与旧的块相同的桶，确保在这种情况下避免死锁
+  // 在这里我避免了锁的嵌套
   // if (hash_out != hash_in)
   acquire(&buckets[hash_out].lock);
   buckets_remove(recycle);
