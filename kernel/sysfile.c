@@ -119,7 +119,7 @@ sys_fstat(void)
 
 // Create the path new as a link to the same inode as old.
 uint64
-sys_link(void)  // TODO
+sys_link(void)
 {
   char name[DIRSIZ], new[MAXPATH], old[MAXPATH];
   struct inode *dp, *ip;
