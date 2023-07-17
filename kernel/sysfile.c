@@ -99,7 +99,9 @@ sys_close(void)
 
   if(argfd(0, &fd, &f) < 0)
     return -1;
+  // 1. 将当前进程的文件描述符删除
   myproc()->ofile[fd] = 0;
+  // 2，在全局打开的文件表中，令引用减一，若引用为零则删除其条目
   fileclose(f);
   return 0;
 }
@@ -284,7 +286,7 @@ create(char *path, short type, short major, short minor)
 }
 
 uint64
-sys_open(void)  // 
+sys_open(void)
 {
   char path[MAXPATH];
   int fd, omode;
@@ -354,7 +356,7 @@ sys_open(void)  //
     }
   }
 
-  // 1. 在全局文件表中记录，并分配
+  // 1. 在全局文件表中记录，并分配一个条目，建立与inode的联系
   // 2. 分配一个仅当前进程可见的文件描述符
   if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
     if(f)
