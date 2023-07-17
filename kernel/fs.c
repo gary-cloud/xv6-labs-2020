@@ -389,12 +389,41 @@ bmap(struct inode *ip, uint bn)
 
   if(bn < NINDIRECT){
     // Load indirect block, allocating if necessary.
-    if((addr = ip->addrs[NDIRECT]) == 0)
-      ip->addrs[NDIRECT] = addr = balloc(ip->dev);
+    if((addr = ip->addrs[11]) == 0)
+      ip->addrs[11] = addr = balloc(ip->dev);
     bp = bread(ip->dev, addr);
     a = (uint*)bp->data;
     if((addr = a[bn]) == 0){
       a[bn] = addr = balloc(ip->dev);
+      log_write(bp);
+    }
+    brelse(bp);
+    return addr;
+  }
+  bn -= NINDIRECT;
+
+  if(bn < NDOUBINDIRECT){
+    if((addr = ip->addrs[12]) == 0)
+      // 若一次间接块未分配，则分配
+      ip->addrs[12] = addr = balloc(ip->dev);
+    // 读出一次间接块的buf
+    bp = bread(ip->dev, addr);
+    a = (uint*)bp->data;
+    // idx1为一次间接块的索引，idx2为二次间接块的索引
+    uint idx1 = bn / NINDIRECT;
+    uint idx2 = bn % NINDIRECT;
+    if((addr = a[idx1]) == 0) {
+      // 若二次间接块未分配，则分配
+      a[idx1] = addr = balloc(ip->dev);
+      log_write(bp);
+    }
+    brelse(bp);
+    // 读出二次间接块的buf
+    bp = bread(ip->dev, addr);
+    a = (uint*)bp->data;
+    if((addr = a[idx2]) == 0){
+      // 若目标块未分配，则分配
+      a[idx2] = addr = balloc(ip->dev);
       log_write(bp);
     }
     brelse(bp);
@@ -410,8 +439,8 @@ void
 itrunc(struct inode *ip)
 {
   int i, j;
-  struct buf *bp;
-  uint *a;
+  struct buf *bp, *dbp;
+  uint *a, *da;
 
   for(i = 0; i < NDIRECT; i++){
     if(ip->addrs[i]){
@@ -420,16 +449,37 @@ itrunc(struct inode *ip)
     }
   }
 
-  if(ip->addrs[NDIRECT]){
-    bp = bread(ip->dev, ip->addrs[NDIRECT]);
+  if(ip->addrs[11]){
+    bp = bread(ip->dev, ip->addrs[11]);
     a = (uint*)bp->data;
     for(j = 0; j < NINDIRECT; j++){
       if(a[j])
         bfree(ip->dev, a[j]);
     }
     brelse(bp);
-    bfree(ip->dev, ip->addrs[NDIRECT]);
-    ip->addrs[NDIRECT] = 0;
+    bfree(ip->dev, ip->addrs[11]);
+    ip->addrs[11] = 0;
+  }
+
+  if(ip->addrs[12]){
+    bp = bread(ip->dev, ip->addrs[12]);
+    a = (uint*)bp->data;
+    for(i = 0; i < NINDIRECT; i++){
+      if (a[i]) {
+        dbp = bread(ip->dev, a[i]);
+        da = (uint*)dbp->data;
+        for (j = 0; j < NINDIRECT; j++) {
+          if (da[j])
+            bfree(ip->dev, da[j]);
+        }
+        brelse(dbp);
+        bfree(ip->dev, a[i]);
+        a[i] = 0;
+      }
+    }
+    brelse(bp);
+    bfree(ip->dev, ip->addrs[12]);
+    ip->addrs[12] = 0;
   }
 
   ip->size = 0;

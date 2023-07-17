@@ -117,7 +117,7 @@ sys_fstat(void)
 
 // Create the path new as a link to the same inode as old.
 uint64
-sys_link(void)
+sys_link(void)  // TODO
 {
   char name[DIRSIZ], new[MAXPATH], old[MAXPATH];
   struct inode *dp, *ip;
@@ -284,7 +284,7 @@ create(char *path, short type, short major, short minor)
 }
 
 uint64
-sys_open(void)
+sys_open(void)  // 
 {
   char path[MAXPATH];
   int fd, omode;
@@ -298,12 +298,14 @@ sys_open(void)
   begin_op();
 
   if(omode & O_CREATE){
+    // 创建文件
     ip = create(path, T_FILE, 0, 0);
     if(ip == 0){
       end_op();
       return -1;
     }
   } else {
+    // 不创建文件
     if((ip = namei(path)) == 0){
       end_op();
       return -1;
@@ -322,6 +324,38 @@ sys_open(void)
     return -1;
   }
 
+  // O_NOFOLLOW 模式表示是否需要递归查找符号链接的文件，false为需要，true为不需要
+  if(!(omode & O_NOFOLLOW)) {
+    // 需要递归查找
+    int depth = 0;
+    while (ip->type == T_SYMLINK) {
+      // 判断是否递归深度太大
+      if (depth > 10) {
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+      // 读出符号链接文件所存储的路径
+      memset(path, 0, MAXPATH);
+      if (readi(ip, 0, (uint64)path, 0, MAXPATH) != MAXPATH) {
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+      iunlockput(ip);
+      // 用读出的路径寻找被链接的文件，将ip修改为其所对应地inode
+      if ((ip = namei(path)) == 0) {
+        end_op();
+        return -1;
+      }
+      ilock(ip);
+      // 深度增加
+      depth++;
+    }
+  }
+
+  // 1. 在全局文件表中记录，并分配
+  // 2. 分配一个仅当前进程可见的文件描述符
   if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
     if(f)
       fileclose(f);
@@ -483,4 +517,50 @@ sys_pipe(void)
     return -1;
   }
   return 0;
+}
+
+uint64
+sys_symlink(void)
+{
+  char new[MAXPATH], old[MAXPATH];
+  struct inode *ip;
+
+  memset(new, 0, MAXPATH);
+  memset(old, 0, MAXPATH);
+  if(argstr(0, old, MAXPATH) < 0 || argstr(1, new, MAXPATH) < 0)
+    return -1;
+
+  begin_op();
+  if((ip = namei(old)) != 0){
+    // 锁定 ip 是必要的，不是因为 ip->type 可能会改变，
+    // 而是因为在 ilock 运行之前，不能保证 ip->type 已经从磁盘载入
+    // 原文件存在，但不能为目录
+    ilock(ip);
+    if (ip->type == T_DIR) {
+      iunlockput(ip);
+      goto bad;
+    }
+    iunlockput(ip);
+  }
+
+  if((ip = namei(new)) != 0){
+    // 链接文件已经存在则出错
+    goto bad;
+  }
+
+  // 创建一个符号链接的inode
+  // create函数会返回创建的inode，此时也会持有返回的inode锁
+  if((ip = create(new, T_SYMLINK, 0, 0)) == 0)
+    goto bad;
+
+  // 写入新inode，目标文件的路径
+  if(writei(ip, 0, (uint64)old, 0, MAXPATH) != MAXPATH)
+    panic("symlink: writei");
+  
+  iunlockput(ip);
+  end_op();
+  return 0;
+bad:
+  end_op();
+  return -1;
 }
