@@ -5,6 +5,10 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "sleeplock.h"
+#include "fs.h"
+#include "file.h"
+#include "fcntl.h"
 
 struct cpu cpus[NCPU];
 
@@ -296,6 +300,14 @@ fork(void)
       np->ofile[i] = filedup(p->ofile[i]);
   np->cwd = idup(p->cwd);
 
+  // copy vams
+  for (i = 0; i < NVMA; i++) {
+    if (p->vmas[i].valid) {
+      np->vmas[i] = p->vmas[i];
+      filedup(np->vmas[i].file);
+    }
+  }
+
   safestrcpy(np->name, p->name, sizeof(p->name));
 
   pid = np->pid;
@@ -340,9 +352,57 @@ void
 exit(int status)
 {
   struct proc *p = myproc();
+  struct vma *vma = 0;
 
   if(p == initproc)
     panic("init exiting");
+
+  // Clear all vma
+  for (int i = 0; i < NVMA; i++) {
+    if (p->vmas[i].valid) {
+      vma = &p->vmas[i];
+
+      // 若为 MAP_SHARED，写回磁盘
+      if (vma->flags == MAP_SHARED) {
+        // if (filewrite(vma->file, addr, len) < 0) {
+        //   printf("munmap: filewrite error\n");
+        // }
+        
+        // 此处参考 file.c 的 filewrite 函数
+        // 因为我们只想对脏页写回，所以不能直接使用 filewrite 函数
+        // max = 2048，
+        int max = ((MAXOPBLOCKS-1-1-2) / 2) * BSIZE;
+        for (uint64 va = vma->addr; va < vma->addr + vma->len; va += PGSIZE) {
+          // 跳过不为脏的页
+          if (uvmdirtyget(p->pagetable, va) == 0) {
+            continue;
+          }
+          int i = 0;
+          while (i < PGSIZE) {
+            int n1 = PGSIZE - i;
+            if(n1 > max)
+              n1 = max;
+            begin_op();
+            ilock(vma->file->ip);
+            if (writei(vma->file->ip, 1, va + i, (va - vma->addr) + vma->offset + i, n1) != n1) {
+              iunlock(vma->file->ip);
+              end_op();
+              panic("exit: writei failed");
+            }
+            iunlock(vma->file->ip);
+            end_op();
+          }
+        }
+      }
+
+      // 删除页表项
+      uvmunmap(p->pagetable, vma->addr, vma->len / PGSIZE, 1);
+
+      // 清理 vma 结构体
+      fileclose(vma->file);
+      memset(vma, 0, sizeof(struct vma));
+    }
+  }
 
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){

@@ -15,6 +15,7 @@
 #include "sleeplock.h"
 #include "file.h"
 #include "fcntl.h"
+#include "memlayout.h"
 
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
@@ -482,5 +483,184 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  return 0;
+}
+
+uint64
+sys_mmap(void)
+{
+  uint64 addr;
+  int len, prot, flags, offset;
+  struct file *file;
+  struct proc *p = myproc();
+  struct vma *vma = 0;
+
+  // 获得参数
+  if (argaddr(0, &addr) < 0  || argint(1, &len) < 0   || 
+      argint(2, &prot) < 0   || argint(3, &flags) < 0 || 
+      argfd(4, 0, &file) < 0 || argint(5, &offset) < 0) {
+    return -1;
+  }
+
+  // 合理性检查：
+  // 1. 将 addr 映射到堆上，并且不能溢出
+  len = PGROUNDUP(len);
+  if (p->sz + len > TRAPFRAME) {
+    return -1;
+  } else {
+    addr = p->sz;
+    // 延迟分配
+    // 现在仅声明增加堆的大小，而不实际添加到页表
+    p->sz += len;
+  }
+
+  // 2. flags 只能在 MAP_SHARED 和 MAP_PRIVATE 中二选一
+  if (flags != MAP_SHARED && flags != MAP_PRIVATE) {
+    return -1;
+  }
+
+  // 3. 若 prot 有 PROT_WRITE时，则文件需要可读
+  if ((prot & PROT_READ) && file->readable == 0) {
+    return -1;
+  }
+
+  // 4. 若 flags 为 MAP_SHARED，且 prot 有 PROT_WRITE时，则文件需要可写
+  if (flags == MAP_SHARED && (prot & PROT_WRITE) && file->writable == 0) {
+    return -1;
+  }
+
+  // 5. offset必须为页大小的倍数
+  if (len < 0 || offset < 0 || offset % PGSIZE) {
+    return -1;
+  }
+
+  // 进程分配一个 vma 
+  for (int i = 0; i < NVMA; i++) {
+    if (p->vmas[i].valid == 0) {
+      vma = &p->vmas[i];
+      break;
+    }
+  }
+
+  // 进程无可用 vma
+  if (vma == 0) {
+    printf("None free vma to alloc\n");
+    return -1;
+  }
+
+  // 填写 vma 信息
+  vma->valid = 1;
+  vma->addr = addr;
+  vma->len = len;
+  vma->prot = prot;
+  vma->flags = flags;
+  vma->offset = offset;
+  vma->file = file;
+
+  // 应该增加文件的引用计数，使该 file 在其他进程文件关闭时不会消失
+  filedup(file);
+
+  return vma->addr;
+}
+
+uint64
+sys_munmap(void)
+{
+  uint64 addr;
+  int len;
+  struct file *file;
+  struct proc *p = myproc();
+  struct vma *vma = 0;
+
+  // 获得参数
+  if (argaddr(0, &addr) < 0  || argint(1, &len) < 0) {
+    return -1;
+  }
+
+  // len为0，啥也不用做
+  if (len == 0) return 0;
+
+  addr = PGROUNDDOWN(addr);
+  len = PGROUNDUP(len);
+
+  // 不能溢出堆
+  if (addr + len > TRAPFRAME) {
+    printf("munmap: heap overflow\n");
+    return -1;
+  }
+
+  // 查找范围匹配的 vma 
+  for (int i = 0; i < NVMA; i++) {
+    if (p->vmas[i].valid) {
+      if (addr < p->vmas[i].addr || 
+          addr + len > p->vmas[i].addr + p->vmas[i].len)
+        continue;
+      vma = &p->vmas[i];
+      break;
+    }
+  }
+
+  // 进程无匹配 vma
+  if (vma == 0) {
+    printf("munmap: no corresponding vma\n");
+    return -1;
+  }
+
+  file = vma->file;
+
+  // 若为 MAP_SHARED，写回磁盘
+  if (vma->flags == MAP_SHARED) {
+    // if (filewrite(vma->file, addr, len) < 0) {
+    //   printf("munmap: filewrite error\n");
+    // }
+
+    // 此处参考 file.c 的 filewrite 函数
+    // 因为我们只想对脏页写回，所以不能直接使用 filewrite 函数
+    // max = 2048，
+    int max = ((MAXOPBLOCKS-1-1-2) / 2) * BSIZE;
+    for (uint64 va = addr; va < addr + len; va += PGSIZE) {
+      // 跳过不为脏的页
+      if (uvmdirtyget(p->pagetable, va) == 0) {
+        continue;
+      }
+      int i = 0;
+      while (i < PGSIZE) {
+        int n1 = PGSIZE - i;
+        if(n1 > max)
+          n1 = max;
+        
+        begin_op();
+        ilock(file->ip);
+        if (writei(file->ip, 1, va + i, (va - vma->addr) + vma->offset + i, n1) != n1) {
+          iunlock(file->ip);
+          end_op();
+          printf("munmap: writei err");
+          return -1;
+        }
+        iunlock(file->ip);
+        end_op();
+
+        i += n1;
+      }
+    }
+  }
+
+  // 删除页表项
+  uvmunmap(p->pagetable, addr, len / PGSIZE, 1);
+
+  // 更新 vma 结构体
+  if (addr == vma->addr && len == vma->len) {
+    fileclose(file);
+    memset(vma, 0, sizeof(struct vma));
+  } else if (addr == vma->addr) {
+    vma->addr += len;
+    vma->offset += len;
+    vma->len -= len;
+  } else if (addr + len == vma->addr + vma->len) {
+    vma->len -= len;
+  } else {
+    panic("munmap: wrong range");
+  }
+
   return 0;
 }

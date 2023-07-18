@@ -82,6 +82,16 @@ struct trapframe {
 
 enum procstate { UNUSED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
+struct vma {
+  int valid;        // vma is valid?
+  uint64 addr;      // mmap address
+  int len;          // mmap memory length
+  int prot;         // permission
+  int flags;        // the mmap flags
+  int offset;       // the file offset
+  struct file* file;   // pointer to the mapped file
+};
+
 // Per-process state
 struct proc {
   struct spinlock lock;
@@ -97,10 +107,13 @@ struct proc {
   // these are private to the process, so p->lock need not be held.
   uint64 kstack;               // Virtual address of kernel stack
   uint64 sz;                   // Size of process memory (bytes)
+  // sz 初始是栈上方的虚拟地址（xv6栈向下增长），也是堆的起点（开始时的堆为空）
+  // sbrk 只是增加了堆的大小，因此 sz 也需增加相应的大小
   pagetable_t pagetable;       // User page table
   struct trapframe *trapframe; // data page for trampoline.S
   struct context context;      // swtch() here to run process
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+  struct vma vmas[16];         // xv6的进程是单用户线程，访问VMA无需加锁
 };

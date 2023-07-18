@@ -5,6 +5,10 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "sleeplock.h"
+#include "fs.h"
+#include "file.h"
+#include "fcntl.h"
 
 struct spinlock tickslock;
 uint ticks;
@@ -65,9 +69,69 @@ usertrap(void)
     intr_on();
 
     syscall();
+  } else if (r_scause() == 13 || r_scause() == 15) {
+    // 造成中断的虚拟地址
+    uint64 va = PGROUNDDOWN(r_stval());
+    struct vma *vma = 0;
+    for (int i = 0; i < NVMA; i++) {
+      // 遍历查找是否有能包含 va 的 vma
+      if (p->vmas[i].valid && 
+          va >= p->vmas[i].addr && 
+          va < p->vmas[i].addr + p->vmas[i].len) {
+            // 若 vma 有效且在范围内
+            vma = &p->vmas[i];
+            break;
+          }
+    }
+
+    // 若找不到合适的 vma，说明就是发生了缺页，而不是由懒加载造成的
+    if (vma == 0) goto err;
+
+    // 当且仅当 store 指令，且为 PROT_WRITE，且已经分配内存、页表时，设置页表项为脏
+    // 也就是说，当内存、页表未分配，且第一条访问该地址的指令为 store 时，会产生两次中断
+    if (r_scause() == 15 && (vma->prot & PROT_WRITE) &&
+        walkaddr(p->pagetable, va)) {
+      if (uvmdirtywriteset(p->pagetable, va)) {
+        printf("uvmdirtywriteset err\n");
+        goto err;
+      }
+
+    } else {
+      // 分配一个物理页
+      uint64 pa = (uint64) kalloc();
+      if (pa == 0) goto err;
+      memset((void *)pa, 0, PGSIZE);
+
+      // 下一步实质是将磁盘或bcache上的文件数据，
+      // 通过vma记录的inode，读出文件的一页到内存中
+      int now_offset = va - vma->addr;
+      ilock(vma->file->ip);
+      // 文件大部分从头读，vma->offset 一般为 0
+      if (readi(vma->file->ip, 0, pa, vma->offset + now_offset, PGSIZE) < 0) {
+        iunlock(vma->file->ip);
+        printf("usertrap: readi err\n");
+        goto err;
+      }
+      iunlock(vma->file->ip);
+
+      // 设置页表及其权限
+      int perm = PTE_U;
+      if (vma->prot & PROT_READ)
+        perm |= PTE_R;
+      // if ((vma->prot & PROT_WRITE) && r_scause() == 15)
+      //   perm |= PTE_W | PTE_D;
+      if (vma->prot & PROT_EXEC)
+        perm |= PTE_X;
+      if (mappages(p->pagetable, va, PGSIZE, pa, perm) < 0) {
+        kfree((void*)pa);
+        goto err;
+      }
+    }
+
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {
+err:
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;
