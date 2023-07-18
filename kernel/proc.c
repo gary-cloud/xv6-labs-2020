@@ -239,6 +239,8 @@ void
 proc_freekernelpagetable(pagetable_t kpagetable)
 {
   // 按分配顺序的逆序来销毁内核页表映射
+  // 注意这里 uvmunmap 的 do_free 参数为 0
+  // 这是因为内核页表共用着物理内存的东西，所以不能直接 free 掉
   uvmunmap(kpagetable, TRAMPOLINE, PGSIZE/PGSIZE, 0);
   uvmunmap(kpagetable, (uint64)etext, (PHYSTOP-(uint64)etext)/PGSIZE, 0);
   uvmunmap(kpagetable, KERNBASE, ((uint64)etext-KERNBASE)/PGSIZE,0);

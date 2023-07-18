@@ -349,6 +349,7 @@ my_freewalk(pagetable_t pagetable)
       uint64 child = PTE2PA(pte);
       my_freewalk((pagetable_t)child);
     }
+    // 原版的 freewalk 中，若遇到仍有效的叶子节点就会 panic
     pagetable[i] = 0;
   }
   kfree((void*)pagetable);
@@ -416,6 +417,8 @@ uvmclear(pagetable_t pagetable, uint64 va)
 // Copy from kernel to user.
 // Copy len bytes from src to virtual address dstva in a given page table.
 // Return 0 on success, -1 on error.
+// 我们保证每个进程的pagetable和kpagetable的前半段映射一直保持一致，
+// 这样我们在切入内核态时直接使用硬件支持的虚拟/物理内存地址寻址
 int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
