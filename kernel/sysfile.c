@@ -631,6 +631,10 @@ sys_munmap(void)
         
         begin_op();
         ilock(file->ip);
+        // 为什么这里 writei 的 user_dst 参数为 1 ？
+        // 因为这里的 va 是用户页表里（或者说 用户地址空间）的虚拟地址
+        // 所以我们需要使用用户页表的映射关系索引到物理内存
+        // 我们使用用户页表，因此 user_dst 参数为 1
         if (writei(file->ip, 1, va + i, (va - vma->addr) + vma->offset + i, n1) != n1) {
           iunlock(file->ip);
           end_op();

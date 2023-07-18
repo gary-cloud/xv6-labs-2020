@@ -107,6 +107,11 @@ usertrap(void)
       int now_offset = va - vma->addr;
       ilock(vma->file->ip);
       // 文件大部分从头读，vma->offset 一般为 0
+
+      // 为什么这里 readi 的 user_dst 参数为 0 ？
+      // 因为我们尚未建立 va -> pa 的映射关系，
+      // 所以我们直接使用内核页表 一一对应 的映射关系索引到物理内存
+      // 我们使用内核页表，因此 user_dst 参数为 0
       if (readi(vma->file->ip, 0, pa, vma->offset + now_offset, PGSIZE) < 0) {
         iunlock(vma->file->ip);
         printf("usertrap: readi err\n");
@@ -118,8 +123,6 @@ usertrap(void)
       int perm = PTE_U;
       if (vma->prot & PROT_READ)
         perm |= PTE_R;
-      // if ((vma->prot & PROT_WRITE) && r_scause() == 15)
-      //   perm |= PTE_W | PTE_D;
       if (vma->prot & PROT_EXEC)
         perm |= PTE_X;
       if (mappages(p->pagetable, va, PGSIZE, pa, perm) < 0) {

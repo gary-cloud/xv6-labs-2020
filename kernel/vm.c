@@ -37,6 +37,15 @@ kvmmake(void)
   kvmmap(kpgtbl, KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R | PTE_X);
 
   // map kernel data and the physical RAM we'll make use of.
+  // kernel data 存放着内核运行的全局量
+  // 这里在内核页表中建立了从 etext（0x80008000）到 PHYSTOP（0x88000000）虚拟地址到物理地址的一一映射
+  // 内核页表中的这些一一对应的关系永远不会 unmap
+  // 这使得 kalloc 和 kfree 始终可以正常工作，即在内核中被分配的物理地址（pa）可以直接使用
+
+  // 这解释了为什么 copyin 和 copyout 也能够正常地工作，因为所谓的 pa 既是物理地址又是虚拟地址，
+  // 这使得 *pa 经过 MMU 的自动映射后，是可以正确寻址到物理内存的数据
+
+  // 
   kvmmap(kpgtbl, (uint64)etext, (uint64)etext, PHYSTOP-(uint64)etext, PTE_R | PTE_W);
 
   // map the trampoline for trap entry/exit to
@@ -382,6 +391,7 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
     n = PGSIZE - (srcva - va0);
     if(n > len)
       n = len;
+    // 这里的 pa0 在内核页表中是有 一一对应 的映射的，因此可以直接解引用
     memmove(dst, (void *)(pa0 + (srcva - va0)), n);
 
     len -= n;
